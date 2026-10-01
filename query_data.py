@@ -1,49 +1,31 @@
-from dotenv import load_dotenv
+# команда запуска python query_data.py
 import ir_datasets
-import os
-from langchain_huggingface import HuggingFaceEmbeddings
-from fastembed import SparseTextEmbedding
-from qdrant_client import QdrantClient
-from google import genai
-from qdrant_client.models import Prefetch, FusionQuery, Fusion, SparseVector
+import config
 from sentence_transformers import CrossEncoder
 from metrics import Metrics
-
-load_dotenv()
-PATH_TEST = "beir/scifact/test"
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-BM25_MODEL_NAME = "Qdrant/bm25"
-QDRANT_URL = os.getenv("QDRANT_URL")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL_NAME = "gemini-3.5-flash"
-CROSS_ENCODER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+from qdrant_service import QdrantService
 
 # Load datasets
-query_dataset = ir_datasets.load(PATH_TEST)
+query_dataset = ir_datasets.load(config.PATH_TEST)
 query_docs = list(query_dataset.queries_iter())
 
 # Load qrels for evaluation
-qrel = ir_datasets.load(PATH_TEST)
+qrel = ir_datasets.load(config.PATH_TEST)
 qrel_list = list(qrel.qrels_iter())
 
-# embeddings
-dense_embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-bm25_embeddings = SparseTextEmbedding(model_name=BM25_MODEL_NAME)
-
-# qdrant client
-client = QdrantClient(
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY
+# init qdrant service
+qdrant_client = QdrantService(
+    qdrant_url=config.QDRANT_URL,
+    qdrant_api_key=config.QDRANT_API_KEY,
+    collection_name=config.COLLECTION_NAME,
+    embed_hugging_model_name=config.EMBEDDING_MODEL_NAME,
+    embed_bm25_model_name=config.BM25_MODEL_NAME
 )
 
-# gemini client
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
-
 # cross encoder
-cross_encoder = CrossEncoder(model_name_or_path=CROSS_ENCODER_MODEL_NAME)
+cross_encoder = CrossEncoder(model_name_or_path=config.CROSS_ENCODER_MODEL_NAME)
 
-metrics = Metrics()
+metrics = Metrics() #init the metrics class for evaluation
 
 def get_qrel_doc_ids(qrels: list, query: object) -> list:
     filtered = [qrel for qrel in qrels if qrel.query_id == query.query_id]
@@ -55,18 +37,6 @@ def get_reranked_results(query: str, results: list, rerank_top_k: int = 5) -> li
     scored_docs = sorted(zip(results, scores), key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in scored_docs[:rerank_top_k]]
 
-def get_context(results: list) -> str:
-    context_parts = []
-    for j, result in enumerate(results):
-        part = f"[Document {j}] (doc_id: {result.payload['doc_id']}, title: {result.payload['doc_title']})\n{result.payload['text']}"
-        context_parts.append(part)
-    return "\n\n".join(context_parts)
-
-def get_response(query: str, context: str) -> str:
-    prompt = f"""Answer the following question based on the provided context. If you don't know the answer, just say that you don't know. \n\nContext:\n{context}\n\nQuestion: {query}\n\nAnswer:"""
-    response = genai_client.models.generate_content(model=GEMINI_MODEL_NAME, contents=prompt)
-    return response.text
-
 recall_dense_only_list = []
 recall_dense_bm25_list = []
 recall_reranked_list = []
@@ -76,72 +46,42 @@ reciprocal_rank_dense_bm25_list = []
 reciprocal_rank_reranked_list = []
 
 for i, query in enumerate(query_docs):
-    embeded_question = dense_embeddings.embed_query(query.text)
-    bm25_embed = list(bm25_embeddings.embed([query.text]))[0]
+    embeded_question = qdrant_client.embed_huggungface(query.text) # get the dense embedding for the query
+    bm25_embed = qdrant_client.embed_bm25(query.text) #get bm25 embedding for the query
 
     # dense only
-    result_dense_only = client.query_points(
-        collection_name="scifact",
-        query=embeded_question,
-        using="dense",
-        limit=5
-    )
-    # context_dense_only = get_context(result_dense_only.points)
-    # response_dense_only = get_response(query.text, context_dense_only)
+    result_dense_only = qdrant_client.query_dense(query_vector=embeded_question, limit=5) # get the top 5 results from dense query
 
-    filtered_qrels = get_qrel_doc_ids(qrel_list, query)
-    filtered_doc_ids = [point.payload["doc_id"] for point in result_dense_only.points]
+    filtered_qrels = get_qrel_doc_ids(qrel_list, query) # Filter qrels for the current query
+    filtered_doc_ids = [point.payload["doc_id"] for point in result_dense_only.points] # get document IDs for the filtered results
 
-    recall_dense_only = metrics.recall_at_k(filtered_doc_ids, filtered_qrels, k=5)
-    recall_dense_only_list.append(recall_dense_only)
+    recall_dense_only = metrics.recall_at_k(filtered_doc_ids, filtered_qrels, k=5) # evaluate recall at k=5 for dense only results
+    recall_dense_only_list.append(recall_dense_only) # Append the recall value to the list
 
-    reciprocal_rank_dense_only = metrics.reciprocal_rank(filtered_doc_ids, filtered_qrels)
-    reciprocal_rank_dense_only_list.append(reciprocal_rank_dense_only)
+    reciprocal_rank_dense_only = metrics.reciprocal_rank(filtered_doc_ids, filtered_qrels) # evaluate reciprocal rank for dense only results
+    reciprocal_rank_dense_only_list.append(reciprocal_rank_dense_only) # append the reciprocal rank value to the list
 
     # dense + bm25
-    results = client.query_points(
-        collection_name="scifact",
-        prefetch=[
-            Prefetch(query=embeded_question, using="dense", limit=20),
-            Prefetch(query=SparseVector(
-                indices=bm25_embed.indices.tolist(),
-                values=bm25_embed.values.tolist()
-            ), using="bm25", limit=20)],
-        query=FusionQuery(fusion=Fusion.RRF),
-        limit=5
-    )
-    # context = get_context(results.points)
-    # response = get_response(query.text, context)
+    results = qdrant_client.query_dense_sparse(query_vector=embeded_question, query_bm25_vector=bm25_embed, limit=5, prefetch_limit=20) # get the top 5 results from dense + bm25 query
 
-    filtered_dense_bm25_doc_ids = [point.payload["doc_id"] for point in results.points]
+    filtered_dense_bm25_doc_ids = [point.payload["doc_id"] for point in results.points] # get document IDs for the filtered results
 
-    recall_dense_bm25 = metrics.recall_at_k(filtered_dense_bm25_doc_ids, filtered_qrels, k=5)
-    recall_dense_bm25_list.append(recall_dense_bm25)
+    recall_dense_bm25 = metrics.recall_at_k(filtered_dense_bm25_doc_ids, filtered_qrels, k=5) # evaluate recall at k=5 for dense + bm25 results
+    recall_dense_bm25_list.append(recall_dense_bm25) # append the recall value to the list
 
-    reciprocal_rank_dense_bm25 = metrics.reciprocal_rank(filtered_dense_bm25_doc_ids, filtered_qrels)
-    reciprocal_rank_dense_bm25_list.append(reciprocal_rank_dense_bm25)
+    reciprocal_rank_dense_bm25 = metrics.reciprocal_rank(filtered_dense_bm25_doc_ids, filtered_qrels) # evaluate reciprocal rank for dense + bm25 results
+    reciprocal_rank_dense_bm25_list.append(reciprocal_rank_dense_bm25) # append the reciprocal rank value to the list
 
     # dense+bm25+reranks
-    results_for_reranking = client.query_points(
-        collection_name="scifact",
-        prefetch=[
-            Prefetch(query=embeded_question, using="dense", limit=40),
-            Prefetch(query=SparseVector(
-                indices=bm25_embed.indices.tolist(),
-                values=bm25_embed.values.tolist()
-            ), using="bm25", limit=40)],
-        query=FusionQuery(fusion=Fusion.RRF),
-        limit=20
-    )
-    # context_reranked = get_context(results_for_reranking.points)
-    # response_reranked = get_response(query.text, context_reranked)
-    reranked_results = get_reranked_results(query.text, results_for_reranking.points, rerank_top_k=5)
-    filtered_reranked_doc_ids = [point.payload["doc_id"] for point in reranked_results]
-    
-    recall_reranked = metrics.recall_at_k(filtered_reranked_doc_ids, filtered_qrels, k=5)
-    recall_reranked_list.append(recall_reranked)
+    results_for_reranking = qdrant_client.query_dense_sparse(query_vector=embeded_question, query_bm25_vector=bm25_embed, limit=20, prefetch_limit=40) # get the top 20 results from dense + bm25 query for reranking
 
-    reciprocal_rank_reranked = metrics.reciprocal_rank(filtered_reranked_doc_ids, filtered_qrels)
+    reranked_results = get_reranked_results(query.text, results_for_reranking.points, rerank_top_k=5) # rerank the top 20 results and get the top 5 reranked results
+    filtered_reranked_doc_ids = [point.payload["doc_id"] for point in reranked_results] # get document IDs for the filtered reranked results
+    
+    recall_reranked = metrics.recall_at_k(filtered_reranked_doc_ids, filtered_qrels, k=5) # evaluate recall at k=5 for reranked results
+    recall_reranked_list.append(recall_reranked) # append the recall value to the list
+
+    reciprocal_rank_reranked = metrics.reciprocal_rank(filtered_reranked_doc_ids, filtered_qrels) # evaluate reciprocal rank for reranked results
     reciprocal_rank_reranked_list.append(reciprocal_rank_reranked)
 
 mean_recall_dense_only = sum(recall_dense_only_list) / len(recall_dense_only_list)

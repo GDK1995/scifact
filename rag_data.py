@@ -1,44 +1,42 @@
+# команда запуска python rag_data.py
 import ir_datasets
-import os
-from dotenv import load_dotenv
+import config
 from langchain_text_splitters  import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from fastembed import SparseTextEmbedding
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, SparseVector, SparseVectorParams
+from qdrant_service import QdrantService
+from qdrant_client.models import PointStruct, SparseVector
 
-load_dotenv()
-PATH = "beir/scifact"
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-BM25_MODEL_NAME = "Qdrant/bm25"
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 100
-QDRANT_URL = os.getenv("QDRANT_URL")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-BATCH_SIZE = 100
-
-dataset = ir_datasets.load(PATH)
+# Load datasets
+dataset = ir_datasets.load(config.PATH)
 docs = dataset.docs_iter()
 
+# text splitter based on chunk size and overlap
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=CHUNK_SIZE,
-    chunk_overlap=CHUNK_OVERLAP
+    chunk_size=config.CHUNK_SIZE,
+    chunk_overlap=config.CHUNK_OVERLAP
 )
 
-dense_embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-bm25_embeddings = SparseTextEmbedding(model_name=BM25_MODEL_NAME)
+# init qdrant service
+qdrant_client = QdrantService(
+    qdrant_url=config.QDRANT_URL,
+    qdrant_api_key=config.QDRANT_API_KEY,
+    collection_name=config.COLLECTION_NAME,
+    embed_hugging_model_name=config.EMBEDDING_MODEL_NAME,
+    embed_bm25_model_name=config.BM25_MODEL_NAME
+)
 
+# def to split text into chunks
 def split_doc(text: str) -> list[str]:
     chunks = text_splitter.split_text(text)
     return chunks
 
+# create points for qdrant
 points = []
 point_id = 0
 for d in docs:
     chunks = split_doc(d.text)
     for chunk in chunks:
-        dense_vector = dense_embeddings.embed_query(chunk)
-        bm25_vector = list(bm25_embeddings.embed([chunk]))[0]
+        dense_vector = qdrant_client.embed_huggungface(chunk)
+        bm25_vector = qdrant_client.embed_bm25(chunk)
         points.append(PointStruct(
                 id=point_id,
                 vector={
@@ -53,23 +51,11 @@ for d in docs:
         )
         point_id += 1
 
-client = QdrantClient(
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY
-)
+# check if collection exists, if yes delete it and create a new one
+qdrant_client.delete_collection()
 
-if client.collection_exists("scifact"):
-    client.delete_collection("scifact")
+# create collection with dense and sparse vectors
+qdrant_client.create_collection(vector_size=config.VECTOR_SIZE)
 
-client.create_collection(
-    collection_name="scifact",
-    vectors_config={
-        "dense": VectorParams(size=384, distance=Distance.COSINE)
-    },
-    sparse_vectors_config={
-        "bm25": SparseVectorParams()
-    }
-)
-
-for i in range(0, len(points), BATCH_SIZE):
-    client.upsert(collection_name="scifact", points=points[i:i + BATCH_SIZE])
+# upsert points in batches
+qdrant_client.upsert_points(points, batch_size=config.BATCH_SIZE)
