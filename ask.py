@@ -1,3 +1,4 @@
+# команда запска uvicorn ask:app --reload
 from fastapi import FastAPI
 from google import genai
 import config
