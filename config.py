@@ -6,10 +6,11 @@ PATH = "beir/scifact"
 PATH_TEST = "beir/scifact/test"
 
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+EMBEDDING_FULL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 BM25_MODEL_NAME = "Qdrant/bm25"
 
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 100
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 50
 BATCH_SIZE = 100
 VECTOR_SIZE = 384
 

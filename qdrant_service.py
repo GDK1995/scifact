@@ -1,7 +1,7 @@
 from qdrant_client import QdrantClient
 from langchain_huggingface import HuggingFaceEmbeddings
 from fastembed import SparseTextEmbedding
-from qdrant_client.models import Prefetch, FusionQuery, Fusion, SparseVector, VectorParams, Distance, SparseVectorParams
+from qdrant_client.models import Prefetch, models, FusionQuery, Fusion, SparseVector
 
 class QdrantService:
 
@@ -48,10 +48,10 @@ class QdrantService:
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config={
-                "dense": VectorParams(size=vector_size, distance=Distance.COSINE)
+                "dense": models.VectorParams(size=vector_size, distance=models.Distance.COSINE)
             },
             sparse_vectors_config={
-                "bm25": SparseVectorParams()
+                "bm25": models.SparseVectorParams(modifier=models.Modifier.IDF)
             }
         )
 

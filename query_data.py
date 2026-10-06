@@ -1,6 +1,7 @@
 # команда запуска python query_data.py
 import ir_datasets
 import config
+import csv
 from sentence_transformers import CrossEncoder
 from metrics import Metrics
 from qdrant_service import QdrantService
@@ -37,6 +38,32 @@ def get_reranked_results(query: str, results: list, rerank_top_k: int = 5) -> li
     scored_docs = sorted(zip(results, scores), key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in scored_docs[:rerank_top_k]]
 
+def get_doc_ids(results: list, limit: int) -> list:
+    seen = set()
+    filtered_doc_ids = []
+    for result in results:
+        doc_id = result.payload["doc_id"]
+        if doc_id not in seen:
+            seen.add(doc_id)
+            filtered_doc_ids.append(doc_id)
+        if len(filtered_doc_ids) == limit:
+            break
+
+    return filtered_doc_ids
+
+def save_results_to_csv(results: list, filename: str):
+    with open(filename, "w", encoding="utf-8", newline="") as f:
+        fieldnames = [
+            "query_id", "query_text", "relevant_qrels",
+            "dense_doc_ids", "dense_recall_at_5", "dense_reciprocal_rank",
+            "dense_bm25_doc_ids", "dense_bm25_recall_at_5", "dense_bm25_reciprocal_rank",
+            "reranked_doc_ids", "reranked_recall_at_5", "reranked_reciprocal_rank"
+        ]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for result in results:
+            writer.writerow(result)
+
 recall_dense_only_list = []
 recall_dense_bm25_list = []
 recall_reranked_list = []
@@ -45,15 +72,15 @@ reciprocal_rank_dense_only_list = []
 reciprocal_rank_dense_bm25_list = []
 reciprocal_rank_reranked_list = []
 
+score_list = []
 for i, query in enumerate(query_docs):
+    filtered_qrels = get_qrel_doc_ids(qrel_list, query) # Filter qrels for the current query
     embeded_question = qdrant_client.embed_huggungface(query.text) # get the dense embedding for the query
     bm25_embed = qdrant_client.embed_bm25(query.text) #get bm25 embedding for the query
 
     # dense only
-    result_dense_only = qdrant_client.query_dense(query_vector=embeded_question, limit=5) # get the top 5 results from dense query
-
-    filtered_qrels = get_qrel_doc_ids(qrel_list, query) # Filter qrels for the current query
-    filtered_doc_ids = [point.payload["doc_id"] for point in result_dense_only.points] # get document IDs for the filtered results
+    result_dense_only = qdrant_client.query_dense(query_vector=embeded_question, limit=30) # get the top 30 results from dense query
+    filtered_doc_ids = get_doc_ids(result_dense_only.points, limit=5) # get 5 document IDs for the filtered results
 
     recall_dense_only = metrics.recall_at_k(filtered_doc_ids, filtered_qrels, k=5) # evaluate recall at k=5 for dense only results
     recall_dense_only_list.append(recall_dense_only) # Append the recall value to the list
@@ -62,9 +89,8 @@ for i, query in enumerate(query_docs):
     reciprocal_rank_dense_only_list.append(reciprocal_rank_dense_only) # append the reciprocal rank value to the list
 
     # dense + bm25
-    results = qdrant_client.query_dense_sparse(query_vector=embeded_question, query_bm25_vector=bm25_embed, limit=5, prefetch_limit=20) # get the top 5 results from dense + bm25 query
-
-    filtered_dense_bm25_doc_ids = [point.payload["doc_id"] for point in results.points] # get document IDs for the filtered results
+    results = qdrant_client.query_dense_sparse(query_vector=embeded_question, query_bm25_vector=bm25_embed, limit=30, prefetch_limit=40) # get the top 30 results from dense + bm25 query
+    filtered_dense_bm25_doc_ids = get_doc_ids(results.points, limit=5) # get 5 document IDs for the filtered results
 
     recall_dense_bm25 = metrics.recall_at_k(filtered_dense_bm25_doc_ids, filtered_qrels, k=5) # evaluate recall at k=5 for dense + bm25 results
     recall_dense_bm25_list.append(recall_dense_bm25) # append the recall value to the list
@@ -73,16 +99,31 @@ for i, query in enumerate(query_docs):
     reciprocal_rank_dense_bm25_list.append(reciprocal_rank_dense_bm25) # append the reciprocal rank value to the list
 
     # dense+bm25+reranks
-    results_for_reranking = qdrant_client.query_dense_sparse(query_vector=embeded_question, query_bm25_vector=bm25_embed, limit=20, prefetch_limit=40) # get the top 20 results from dense + bm25 query for reranking
+    reranked_results = get_reranked_results(query.text, results.points, rerank_top_k=30) # rerank the top 30 results and get the top 30 reranked results
+    filtered_reranked_doc_ids = get_doc_ids(reranked_results, limit=5) # get 5 document IDs for the filtered reranked results
 
-    reranked_results = get_reranked_results(query.text, results_for_reranking.points, rerank_top_k=5) # rerank the top 20 results and get the top 5 reranked results
-    filtered_reranked_doc_ids = [point.payload["doc_id"] for point in reranked_results] # get document IDs for the filtered reranked results
-    
     recall_reranked = metrics.recall_at_k(filtered_reranked_doc_ids, filtered_qrels, k=5) # evaluate recall at k=5 for reranked results
     recall_reranked_list.append(recall_reranked) # append the recall value to the list
 
     reciprocal_rank_reranked = metrics.reciprocal_rank(filtered_reranked_doc_ids, filtered_qrels) # evaluate reciprocal rank for reranked results
     reciprocal_rank_reranked_list.append(reciprocal_rank_reranked)
+
+    # append the scores to the list
+    score_list.append({
+        "query_id": query.query_id,
+        "query_text": query.text,
+        "relevant_qrels": filtered_qrels,
+        "dense_doc_ids": filtered_doc_ids,
+        "dense_recall_at_5": recall_dense_only,
+        "dense_reciprocal_rank": reciprocal_rank_dense_only,
+        "dense_bm25_doc_ids": filtered_dense_bm25_doc_ids,
+        "dense_bm25_recall_at_5": recall_dense_bm25,
+        "dense_bm25_reciprocal_rank": reciprocal_rank_dense_bm25,
+        "reranked_doc_ids": filtered_reranked_doc_ids,
+        "reranked_recall_at_5": recall_reranked,
+        "reranked_reciprocal_rank": reciprocal_rank_reranked
+    })
+save_results_to_csv(score_list, "results.csv") # save the results to a csv file
 
 mean_recall_dense_only = sum(recall_dense_only_list) / len(recall_dense_only_list)
 print(f"Mean Recall@5 (Dense Only): {mean_recall_dense_only:.3f}")

@@ -1,6 +1,7 @@
 # команда запуска python rag_data.py
 import ir_datasets
 import config
+from transformers import AutoTokenizer
 from langchain_text_splitters  import RecursiveCharacterTextSplitter
 from qdrant_service import QdrantService
 from qdrant_client.models import PointStruct, SparseVector
@@ -14,6 +15,8 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=config.CHUNK_SIZE,
     chunk_overlap=config.CHUNK_OVERLAP
 )
+
+tokenizer = AutoTokenizer.from_pretrained(config.EMBEDDING_FULL_NAME)
 
 # init qdrant service
 qdrant_client = QdrantService(
@@ -50,6 +53,7 @@ for d in docs:
             )
         )
         point_id += 1
+
 
 # check if collection exists, if yes delete it and create a new one
 qdrant_client.delete_collection()
