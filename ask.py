@@ -51,7 +51,7 @@ def get_source_from_reranked_result(results: list) -> list:
     return sources
 
 @app.post("/ask")
-async def ask_question(query: str):
+def ask_question(query: str):
     embeded_question = qdrant_client.embed_huggungface(query) # get the dense embedding for the query
     bm25_embed = qdrant_client.embed_bm25(query) #get bm25 embedding for the query
 
