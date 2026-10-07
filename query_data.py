@@ -33,7 +33,7 @@ def get_qrel_doc_ids(qrels: list, query: object) -> list:
     return [qrel.doc_id for qrel in filtered]
 
 def get_reranked_results(query: str, results: list, rerank_top_k: int = 5) -> list:
-    pairs = [(query, f"{result.payload['doc_title']}. {result.payload['text']}") for result in results]
+    pairs = [(query, result.payload['text']) for result in results]
     scores = cross_encoder.predict(pairs)
     scored_docs = sorted(zip(results, scores), key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in scored_docs[:rerank_top_k]]
