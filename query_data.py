@@ -56,8 +56,8 @@ def save_results_to_csv(results: list, filename: str):
         fieldnames = [
             "query_id", "query_text", "relevant_qrels",
             "dense_doc_ids", "dense_recall_at_5", "dense_reciprocal_rank",
-            "dense_bm25_doc_ids", "dense_bm25_recall_at_5", "dense_bm25_reciprocal_rank",
-            "reranked_doc_ids", "reranked_recall_at_5", "reranked_reciprocal_rank"
+            "dense_bm25_doc_ids", "dense_bm25_recall_at_5", "dense_bm25_reciprocal_rank", "dense_bm25_results",
+            "reranked_doc_ids", "reranked_recall_at_5", "reranked_reciprocal_rank", "reranked_results"
         ]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -119,9 +119,11 @@ for i, query in enumerate(query_docs):
         "dense_bm25_doc_ids": filtered_dense_bm25_doc_ids,
         "dense_bm25_recall_at_5": recall_dense_bm25,
         "dense_bm25_reciprocal_rank": reciprocal_rank_dense_bm25,
+        "dense_bm25_results": results,
         "reranked_doc_ids": filtered_reranked_doc_ids,
         "reranked_recall_at_5": recall_reranked,
-        "reranked_reciprocal_rank": reciprocal_rank_reranked
+        "reranked_reciprocal_rank": reciprocal_rank_reranked,
+        "reranked_results": reranked_results
     })
 save_results_to_csv(score_list, "results.csv") # save the results to a csv file
 
