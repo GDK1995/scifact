@@ -33,7 +33,7 @@ def get_qrel_doc_ids(qrels: list, query: object) -> list:
     return [qrel.doc_id for qrel in filtered]
 
 def get_reranked_results(query: str, results: list, rerank_top_k: int = 5) -> list:
-    pairs = [(query, result.payload['text']) for result in results]
+    pairs = [(query, f"{result.payload['doc_title']}. {result.payload['text']}") for result in results]
     scores = cross_encoder.predict(pairs)
     scored_docs = sorted(zip(results, scores), key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in scored_docs[:rerank_top_k]]
@@ -56,8 +56,8 @@ def save_results_to_csv(results: list, filename: str):
         fieldnames = [
             "query_id", "query_text", "relevant_qrels",
             "dense_doc_ids", "dense_recall_at_5", "dense_reciprocal_rank",
-            "dense_bm25_doc_ids", "dense_bm25_recall_at_5", "dense_bm25_reciprocal_rank", "dense_bm25_results",
-            "reranked_doc_ids", "reranked_recall_at_5", "reranked_reciprocal_rank", "reranked_results"
+            "dense_bm25_doc_ids", "dense_bm25_recall_at_5", "dense_bm25_reciprocal_rank",
+            "reranked_doc_ids", "reranked_recall_at_5", "reranked_reciprocal_rank"
         ]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -119,11 +119,9 @@ for i, query in enumerate(query_docs):
         "dense_bm25_doc_ids": filtered_dense_bm25_doc_ids,
         "dense_bm25_recall_at_5": recall_dense_bm25,
         "dense_bm25_reciprocal_rank": reciprocal_rank_dense_bm25,
-        "dense_bm25_results": results,
         "reranked_doc_ids": filtered_reranked_doc_ids,
         "reranked_recall_at_5": recall_reranked,
-        "reranked_reciprocal_rank": reciprocal_rank_reranked,
-        "reranked_results": reranked_results
+        "reranked_reciprocal_rank": reciprocal_rank_reranked
     })
 save_results_to_csv(score_list, "results.csv") # save the results to a csv file
 
