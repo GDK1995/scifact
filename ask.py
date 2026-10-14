@@ -1,6 +1,7 @@
 # команда запска uvicorn ask:app --reload
 from fastapi import FastAPI
 from google import genai
+import ir_datasets
 import config
 from qdrant_service import QdrantService
 from sentence_transformers import CrossEncoder
@@ -14,6 +15,10 @@ qdrant_client = QdrantService(
     embed_bm25_model_name=config.BM25_MODEL_NAME
 )
 
+# init dataset
+dataset = ir_datasets.load(config.PATH)
+doc_texts = {d.doc_id: (d.title, d.text) for d in dataset.docs_iter()}
+
 # gemini client
 genai_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
@@ -22,13 +27,6 @@ app = FastAPI(title="SciFact RAG")
 
 # cross encoder
 cross_encoder = CrossEncoder(model_name_or_path=config.CROSS_ENCODER_MODEL_NAME)
-
-def get_context(results: list) -> str:
-    context_parts = []
-    for j, result in enumerate(results):
-        part = f"[Document {j}] (doc_id: {result.payload['doc_id']}, title: {result.payload['doc_title']})\n{result.payload['text']}"
-        context_parts.append(part)
-    return "\n\n".join(context_parts)
 
 def get_response(query: str, context: str) -> str:
     prompt = f"""Answer the following question based on the provided context. If you don't know the answer, just say that you don't know. \n\nContext:\n{context}\n\nQuestion: {query}\n\nAnswer:"""
@@ -41,13 +39,20 @@ def get_reranked_results(query: str, results: list, rerank_top_k: int = 5) -> li
     scored_docs = sorted(zip(results, scores), key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in scored_docs[:rerank_top_k]]
 
+def get_full_context(doc_ids: list) -> str:
+    full_context = []
+    for j, doc_id in enumerate(doc_ids):
+        title, text = doc_texts[doc_id]
+        part = f"[Document {j}] (doc_id: {doc_id}, title: {title})\n{text}"
+        full_context.append(part)
+    return "\n\n".join(full_context)
+
 def get_source_from_reranked_result(results: list) -> list:
     sources = []
     for result in results:
         doc_id = result.payload["doc_id"]
-        doc_title = result.payload["doc_title"]
-        doc_text = result.payload["text"]
-        sources.append(f"Document ID: {doc_id}, Title: {doc_title}, Text: {doc_text}")
+        title, text = doc_texts[doc_id]
+        sources.append(f"Document ID: {doc_id}, Title: {title}, Text: {text}")
     return sources
 
 @app.post("/ask")
@@ -57,8 +62,8 @@ def ask_question(query: str):
 
     results_for_reranking = qdrant_client.query_dense_sparse(query_vector=embeded_question, query_bm25_vector=bm25_embed, limit=20, prefetch_limit=40) # get the top 20 results from dense + bm25 query for reranking
     reranked_results = get_reranked_results(query, results_for_reranking.points, rerank_top_k=5)
-
-    context = get_context(reranked_results) # get the context from the top 20 results
+    
+    context = get_full_context([result.payload['doc_id'] for result in reranked_results]) # get the context from the top 20 results
     response = get_response(query, context) # get the response from the gemini model
 
     sources = get_source_from_reranked_result(reranked_results) # get the source from the reranked results
